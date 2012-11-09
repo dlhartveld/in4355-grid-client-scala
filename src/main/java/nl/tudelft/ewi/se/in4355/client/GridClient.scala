@@ -23,8 +23,11 @@ class GridClient(val hostname: String, val port: Int) {
   }
 
   def post(path: String, contentType: String, contents: String): HttpResponse = {
-    LOG.trace("POST: " + path + " - content-type: " + contentType + " - contents: " + contents)
-    client.execute(httpPostForUri(url + sanitized(path), contentType, contents))
+    LOG.trace("POST: " + path + " - content-type: " + contentType)
+    //LOG.trace("POST: contents: " + contents)
+    val response = client.execute(httpPostForUri(url + sanitized(path), contentType, contents))
+    LOG.trace("Result: " + response.getStatusLine())
+    response
   }
 
   private def contentsOfResponse(response: HttpResponse) = response.getEntity() match {
@@ -33,18 +36,17 @@ class GridClient(val hostname: String, val port: Int) {
   }
 
   private def httpGetForUri(uri: String): HttpGet = {
-    LOG.trace("Creating GET for URI: " + uri)
     new HttpGet(uri)
   }
 
   private def httpPostForUri(uri: String): HttpPost = {
-    LOG.trace("Creating POST for URI: " + uri)
     new HttpPost(uri)
   }
 
   private def httpPostForUri(uri: String, contentType: String, contents: String): HttpPost = {
-    LOG.trace("Creating POST for URI: " + uri + " - content-type: " + contentType + " - contents: " + contents)
-    val post = new HttpPost(uri)
+    LOG.trace("Creating POST for URI: " + uri + " - content-type: " + contentType)
+    //LOG.trace("Creating POST with contents: " + contents)
+    val post = httpPostForUri(uri)
     val entity = new StringEntity(contents)
     entity.setContentType(contentType)
     post.setEntity(entity)
