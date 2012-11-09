@@ -6,6 +6,8 @@ import org.apache.http.util.EntityUtils
 import grizzled.slf4j.Logger
 import scala.collection.immutable.HashMap
 import scala.collection.mutable.StringBuilder
+import org.apache.http.conn.HttpHostConnectException
+import org.apache.http.HttpStatus
 
 class WordCountExecutor(client: GridClient) {
 
@@ -18,22 +20,26 @@ class WordCountExecutor(client: GridClient) {
 
   def go {
 
-    var job = nextJobId
-    while (job != -1) {
-      LOG.info("Starting job: " + job)
+    var job = client.obtainNextJobId
+    while (true) {
+      LOG.info("\n\nStarting job: " + job + "\n")
 
-      val jsCode = getJobCode(job)
-      if (jsCode == mapCode) {
-        doMap(job)
-      } else if (jsCode == reduceCode) {
-        doReduce(job)
-      } else {
-        LOG.warn("Unknown code:\n" + jsCode)
+      try {
+        val jsCode = client.getCodeForJob(job)
+        if (jsCode == mapCode) {
+          doMap(job)
+        } else if (jsCode == reduceCode) {
+          doReduce(job)
+        } else {
+          LOG.warn("Unknown code:\n" + jsCode)
+        }
+
+        LOG.info("\n\nJob done: " + job + "\n")
+      } catch {
+        case e: Exception => LOG.error("Exception was thrown. Restarting...", e)
       }
 
-      LOG.info("Job done: " + job)
-
-      job = nextJobId
+      job = client.obtainNextJobId
     }
 
     LOG.info("No more jobs to be done.")
@@ -45,7 +51,7 @@ class WordCountExecutor(client: GridClient) {
 
     var hasMoreData = true
     while (hasMoreData) {
-      val data = nextJobData(job)
+      val data = client.nextDataForJob(job)
       val task = data._1
       LOG.info("Got task id: " + task)
 
@@ -55,15 +61,16 @@ class WordCountExecutor(client: GridClient) {
       list.foreach(w => textBuilder.append(w).append(' '))
       val text = textBuilder.deleteCharAt(textBuilder.size - 1).toString
 
-      val words = text.split(" ").map((s) => s.toLowerCase.replaceAll("[^0-9A-Za-z]", "")).filter((s) => s.nonEmpty && !stopwords.contains(s))
+      val words = text.split(" ").map(s => s.toLowerCase.replaceAll("[^0-9A-Za-z]", "")).filter(s => s.nonEmpty && !stopwords.contains(s))
 
       val resultBuilder = new StringBuilder().append("{\"id\":").append(task).append(",\"wordCounts\":[")
-      words.foreach(w => resultBuilder.append("{\"word\":\"").append(w).append("\",\"count\":1},"))
+      words.to.foreach(w => resultBuilder.append("{\"word\":\"").append(w).append("\",\"count\":1},"))
+      words.foreach(w => resultBuilder.append("{\"word\":\"" + w + "\",\"count\":1},"))
       resultBuilder.deleteCharAt(resultBuilder.size - 1).append("]}")
 
       val resultData = resultBuilder.toString
 
-      hasMoreData = sendResultSetFor(job, resultData)
+      hasMoreData = client.sendResultSetFor(job, resultData)
       LOG.info("Has more data? " + hasMoreData)
     }
   }
@@ -73,7 +80,7 @@ class WordCountExecutor(client: GridClient) {
 
     var hasMoreData = true
     while (hasMoreData) {
-      val data = nextJobData(job)
+      val data = client.nextDataForJob(job)
       val task = data._1
       LOG.info("Got task id: " + task + " - computing result...")
 
@@ -103,48 +110,14 @@ class WordCountExecutor(client: GridClient) {
       val resultData = sb.toString
 
       LOG.info("POSTing result...")
-      hasMoreData = sendResultSetFor(job, resultData)
+      hasMoreData = client.sendResultSetFor(job, resultData)
       LOG.info("Has more data? " + hasMoreData)
     }
-  }
-
-  private def nextJobId: Int = {
-    val response = client.post("/resources/jobs")
-    contentsOf(response).getOrElse("-1").toInt
-  }
-
-  private def getJobCode(job: Int): String = {
-    val response = client.post("/resources/jobs/" + job + "/code")
-    contentsOf(response).getOrElse("").trim
-  }
-
-  private def nextJobData(job: Int): (Int, String) = {
-    val response = client.post("/resources/jobs/" + job + "/input")
-    val contents = contentsOf(response).getOrElse("{\"id\": -1, \"value\": []}")
-    val jid = parse(contents).getOrElse("id", -1.0).asInstanceOf[Double].toInt
-    (jid, contents)
-  }
-
-  private def sendEmptyResultSetFor(job: Int, task: Int) = {
-    sendResultSetFor(job, emptyResultSetFor(task))
-  }
-
-  private def sendResultSetFor(job: Int, result: String) = {
-    val response = client.post("/resources/jobs/" + job + "/output", "application/json", result)
-    val contents = contentsOf(response).getOrElse("{\"hasMoreData\": false}")
-    parse(contents).getOrElse("hasMoreData", false).asInstanceOf[Boolean]
-  }
-
-  private def contentsOf(response: HttpResponse): Option[String] = response.getEntity() match {
-    case null => None
-    case entity => new Some(EntityUtils.toString(entity, "UTF-8"))
   }
 
   private def parse(json: String): Map[String, Any] = {
     JSON.parseFull(json).getOrElse(new HashMap[String, Any]).asInstanceOf[Map[String, Any]]
   }
-
-  private def emptyResultSetFor(task: Int) = "{\"id\": " + task + ", \"value\": []}"
 
   private def resourceStream(fileName: String): java.io.InputStream = {
     getClass.getResourceAsStream("/" + fileName)
